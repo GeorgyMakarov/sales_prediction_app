@@ -1,0 +1,12 @@
+name: sales_prediction_app
+title: sales_prediction_app
+username:
+account: georgymakarov
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 2537787
+bundleId: 3376689
+url: https://georgymakarov.shinyapps.io/sales_prediction_app/
+when: 1594393527.64115
+asMultiple: FALSE
+asStatic: FALSE

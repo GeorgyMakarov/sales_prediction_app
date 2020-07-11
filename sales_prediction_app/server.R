@@ -2,72 +2,92 @@ library(shiny)
 library(dplyr)
 library(lubridate)
 library(splines)
+library(ggplot2)
+library(forecast)
 
 shinyServer(function(input, output){
     
     mydata <- read.csv("mydata.csv")
     mydata <- mydata %>% select(-X)
     mydata$Date_Id <- ymd(mydata$Date_Id)
-    mydata <- mydata %>% filter(valuesales < 10)
     
-    sku_id <- reactive({
-        sku_selected <- input$selectSKU
-        mydata %>% filter(SKU_Id == sku_selected)
+    training <- reactive({
+        select_sku <- input$selectSKU
+        mydata %>% filter(SKU_Id == select_sku)
     })
     
-    model1 <- reactive({
-        lm(volumesales ~ valuesales, data = sku_id())
+    training_week <- reactive({
+        training() %>% mutate(week = week(Date_Id))
     })
     
-    model2 <- reactive({
-        lm(volumesales ~ ns(valuesales, 3), data = sku_id())
+    by_weeks <- reactive({
+        training_week() %>% 
+            group_by(week) %>% 
+            summarise(Date_Id = mean(Date_Id), 
+                      sales = sum(sales), 
+                      volume = sum(volume), 
+                      price = mean(price))
+        })
+    
+    ts_sales <- reactive({
+        ts(by_weeks()$volume, 
+           frequency = 365.25 / 7,
+           start = decimal_date(ymd("2019-01-01")))
     })
     
-    new_price <- reactive({
+    ext_regressor <- reactive({by_weeks()$price})
+    
+    model <- reactive({auto.arima(ts_sales(), xreg = ext_regressor())})
+    
+    pred_model <- reactive({
         price_coeff <- input$newPrice
-        current_meanp <- mean(sku_id()$valuesales)
-        newp <- current_meanp * (1 + price_coeff)
-        data.frame(valuesales = newp)
+        num_rows <- nrow(by_weeks())
+        ext_forecast <- by_weeks()$price * price_coeff
+        pred.model2 <- forecast(model(), h = num_rows, xreg = ext_forecast)
+        pred.model2 <- as.numeric(pred.model2$mean)
+        fc_data <- data.frame(week = 1:num_rows, 
+                              price = ext_forecast, 
+                              volume = pred.model2,
+                              sales = ext_forecast * pred.model2)
+        fc_data$Date_Id <- seq(max(by_weeks()$Date_Id)+2, 
+                               by = 'week', length.out = num_rows)
+        fc_data <- fc_data %>% select(Date_Id, sales, price, volume)
+        
+        impute.mean <- function(x) replace(x, x < 0, mean(x, na.rm = TRUE))
+        fc_data <- fc_data %>% mutate(volume = impute.mean(volume),
+                                      sales = price * volume)
+        ac_data <- by_weeks() %>% select(Date_Id, sales, price, volume)
+        rbind(ac_data, fc_data)
     })
     
-    model1pred <- reactive({
-        predict(model1(), new_price())
+    pred_volume <- reactive({
+        sum(pred_model()$volume)
     })
     
-    model2pred <- reactive({
-        predict(model2(), new_price())
+    pred_sales <- reactive({
+        sales_p <- sum(pred_model()$sales)
+        
+        if (sales_p < 0) {sfc = 0} else {sfc = sales_p}
+        sfc
+        
     })
     
-    output$pred1 <- renderText({model1pred()})
-    output$pred2 <- renderText({model2pred()})
+    half_rows <- reactive({
+        nrow(pred_model()) * 0.5
+    })
     
     output$plot1 <- renderPlot({
-        
-        price_max <- max(sku_id()$valuesales)
-        mod2lines <- predict(model2(), 
-                             newdata = data.frame(valuesales = 0:price_max))
-        
-        top3 <- sku_id() %>% 
-            group_by(Shop_Id) %>% 
-            summarise(sales = sum(volumesales)) %>% 
-            arrange(desc(sales)) %>% head(3)
-        top3 <- top3$Shop_Id
-        top3_filter <- sku_id() %>% filter(Shop_Id %in% top3)
-        
-        mycol <- rgb(0.3, 0.3, 1, alpha = 0.5)
-        plot(sku_id()$valuesales, sku_id()$volumesales, xlab = "price", 
-             ylab = "sales", bty = "n", pch = 16, col = mycol)
-        if (input$showModel1) {abline(model1(), col = "red", lwd = 2)}
-        if (input$showModel1) {points(new_price(), model1pred(), col = "red", 
-                                      pch = 16, cex = 1.5)}
-        if (input$showModel2) {lines(0:price_max, mod2lines, col = "blue", 
-                                     lwd = 2)}
-        if (input$showModel2) {points(new_price(), model2pred(), col = "blue", 
-                                      pch = 16, cex = 1.5)}
-        if (input$showTop) {points(top3_filter$valuesales, 
-                                   top3_filter$volumesales, col = "green", 
-                                      pch = 16, cex = 1.0)}
+        ggplot(pred_model()) +
+            geom_point(aes(Date_Id, volume, color = price, size = sales), alpha = 3/4) +
+            geom_smooth(aes(Date_Id, volume)) + 
+            geom_vline(xintercept = as.numeric(pred_model()$Date_Id[half_rows()]),
+                       color = "red", size = 0.8) +
+            xlab("date")
     })
+    
+    output$pred1 <- renderText({pred_volume()})
+    output$pred2 <- renderText({pred_sales()})
+
 })
 
 
