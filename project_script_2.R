@@ -45,8 +45,10 @@ summary(mydata)
 
 # filter data for top shops and skus
 
-by_shop <- mydata %>% filter(Shop_Id %in% c(7338, 7370, 7507))
-by_sku <- by_shop %>% filter(SKU_Id %in% c(1239, 1894, 1426, 1899, 1881, 1892))
+by_shop <- mydata %>% filter(Shop_Id %in% c(28, 2565, 3500, 6281, 7395, 7475,
+                                            9290, 9862, 9882, 10036, 12017, 
+                                            7338, 7382, 11064, 7389))
+by_sku <- by_shop %>% filter(SKU_Id %in% c(1545, 1881, 1894, 1426, 1239))
 
 # write the dataset for application to reduce the memory requirements
 
@@ -54,7 +56,10 @@ write.csv(by_sku, "mydata.csv")
 
 # choose one sku for training
 
-training <- by_sku %>% filter(SKU_Id == 1426)
+training <- by_sku %>% filter(SKU_Id == 1239)
+
+training %>% group_by(Shop_Id) %>% summarise(ssales = sum(sales)) %>% 
+    arrange(desc(ssales))
 
 # plot on time series
 

@@ -1,0 +1,84 @@
+---
+title: "Predicting sales volume from time and price"
+author: "Georgy Makarov"
+date: "July 20, 2020"
+output: 
+    html_document:
+        toc: yes
+        toc_float: true
+        theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+## Executive summary
+
+The goal of this project is to create a shiny web application that could predict
+sales volume of a certain product from historic sales data and forecasted price.
+Prediction like this could be useful for marketing campaigns in FMCG companies.
+The result of the project is practically implemented in brewing company.
+
+The application works on **ARIMAX** model. **Time series** of the model is the 
+mean of weekly sales volumes in retail shops. **External regressor** is the mean 
+sales price of a product at a given week. Forecasting period is 52 weeks. The 
+application predicts sales volume for each product. A user can also limit the 
+number of retail shops to include into the model.
+
+The application is built using `R Shiny` and `forecast` library. The model 
+showed **91%** of *RMSE*. It generates new prediction in under **20ms** after
+the change in price forecast. Forecast visualization uses `ggplot2` package. 
+Visualization shows *4-D* graph with actual and forecasted sales volumes, 
+corresponding prices and revenue. Final outputs show sums for forecasted period.
+
+## Data description
+
+Dataset of this project is a `.csv` file that contains weekly sales data for
+2019. Initial dataset contains **6** columns:  
+- SalesItem = quantity of goods sold, pcs.;  
+- valueSales = revenue from goods sold, thousands currency;  
+- volumeSales = volume of goods sold, litres;  
+- Date_Id = week identifier;  
+- Shop_Id = retail shop identifier;  
+- SKU_Id = good identifier;
+
+## Prerequisite libraries
+
+```{r prerequisite, echo=TRUE}
+library(dplyr)
+library(lubridate)
+library(splines)
+library(ggplot2)
+library(forecast)
+```
+
+## Data manipulation
+
+### Getting data
+
+```{r setwd}
+setwd("/home/georgy/Документы/Rstudio")
+```
+
+The data contains **7.5M** rows and **6** variables. By default, the date column
+comes in as *integer* values. Quantity of goods in *pcs* shows up as a factor
+with **13802** levels. Volumes and revenues are numeric. The price is not
+present in the dataset.
+
+```{r get_data, echo=TRUE}
+mydata <- read.csv(file = "data.csv")
+str(mydata)
+```
+
+
+
+
+
+
+
+
+
+

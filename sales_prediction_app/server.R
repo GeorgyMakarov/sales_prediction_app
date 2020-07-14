@@ -13,7 +13,10 @@ shinyServer(function(input, output){
     
     training <- reactive({
         select_sku <- input$selectSKU
-        mydata %>% filter(SKU_Id == select_sku)
+        shop_min <- input$chooseShop[1]
+        shop_max <- input$chooseShop[2]
+        data <- mydata %>% filter(SKU_Id == select_sku)
+        data %>% filter(Shop_Id >= shop_min & Shop_Id <= shop_max)
     })
     
     training_week <- reactive({
@@ -82,7 +85,7 @@ shinyServer(function(input, output){
             geom_smooth(aes(Date_Id, volume)) + 
             geom_vline(xintercept = as.numeric(pred_model()$Date_Id[half_rows()]),
                        color = "red", size = 0.8) +
-            xlab("date")
+            xlab("date") + scale_color_gradient(low = "green", high = "red")
     })
     
     output$pred1 <- renderText({pred_volume()})
