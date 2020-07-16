@@ -35,13 +35,57 @@ mydata <- mydata %>% filter(!is.na(price))
 mydata <- mydata %>% filter(sales > 0)
 mydata <- mydata %>% filter(price > 0)
 
+# identify sales outliers
+
+ggplot(mydata) + geom_density(aes(sales))
+ggplot(mydata) + 
+    geom_histogram(aes(sales), bins = 20, fill = "steelblue") +
+    coord_cartesian(ylim = c(0, 100))
+
+# use univariate approach to remove sales outliers
+
+qnt <- quantile(mydata$sales, probs = c(0.25, 0.75), na.rm = TRUE)
+h <- 1.5 * (qnt[2] - qnt[1])
+lower_limit <- qnt[1] - h
+upper_limit <- qnt[2] + h
+c(lower_limit, upper_limit)
+
+mydata$sales[mydata$sales < lower_limit] <- NA
+mydata$sales[mydata$sales > upper_limit] <- NA
+round(sum(is.na(mydata$sales)) / nrow(mydata), 3)
+mydata <- mydata %>% filter(!is.na(sales))
+
+ggplot(mydata) + geom_histogram(aes(sales), bins = 15, fill = "steelblue")
+
 # remove price outliers
 
-mydata <- mydata %>% filter(price < 150)
+qnt <- quantile(mydata$price, probs = c(0.25, 0.75), na.rm = TRUE)
+h <- 1.5 * (qnt[2] - qnt[1])
+lower_limit <- qnt[1] - h
+upper_limit <- qnt[2] + h
+mydata$price[mydata$price < lower_limit] <- NA
+mydata$price[mydata$price > upper_limit] <- NA
+mydata <- mydata %>% filter(!is.na(price))
+ggplot(mydata) + geom_histogram(aes(price), bins = 15, fill = "steelblue")
+
+# remove volume outliers
+
+qnt <- quantile(mydata$volume, probs = c(0.25, 0.75), na.rm = TRUE)
+h <- 1.5 * (qnt[2] - qnt[1])
+lower_limit <- qnt[1] - h
+upper_limit <- qnt[2] + h
+mydata$volume[mydata$volume < lower_limit] <- NA
+mydata$volume[mydata$volume > upper_limit] <- NA
+mydata <- mydata %>% filter(!is.na(volume))
+ggplot(mydata) + geom_histogram(aes(volume), bins = 15, fill = "steelblue")
 
 # summarize dataset
 
 summary(mydata)
+
+# skewness tests
+
+
 
 # filter data for top shops and skus
 
