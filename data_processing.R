@@ -53,10 +53,23 @@ mydata <- mydata %>% select(week, shop = Shop_Id, sku = SKU_Id,
 # Skewness shows positive skew for sales, price, volume;
 # Price is the most heavily skewed to the right;
 
-tribble(~feature, ~coef_skewness,
-        "sales", skewness(mydata$sales),
-        "price", skewness(mydata$price),
-        "volume", skewness(mydata$volume))
+t1 <- tribble(~feature, ~coef_skewness, ~ mean,
+                "sales", skewness(mydata$sales), mean(mydata$sales),
+                "price", skewness(mydata$price), mean(mydata$price),
+                "volume", skewness(mydata$volume), mean(mydata$volume))
+
+t2 <- tribble(~median, ~max, ~min,
+              median(mydata$sales), max(mydata$sales), min(mydata$sales),
+              median(mydata$price), max(mydata$price), min(mydata$price),
+              median(mydata$volume), max(mydata$volume), min(mydata$volume))
+
+cbind(t1, t2)
+rm(t1, t2)
+
+tribble(~feature, ~coeff.variation,
+        "sales", sd(mydata$sales) / mean(mydata$sales) * 100,
+        "price", sd(mydata$price) / mean(mydata$price) * 100,
+        "volume", sd(mydata$volume) / mean(mydata$volume) * 100)
 
 # Visualize outliers with histograms.
 # Sales histogram shows that there are sales with values up to 4e+05. There are 
@@ -93,10 +106,9 @@ cooksd <- cooks.distance(mod)
 cut_off <- 4 / nrow(mydata) # setup cutoff value as 4 / n
 
 cooks_data <- data.frame(cooksd, cut_off, test = cooksd >= cut_off)
-summary(cooks_data)
-
 mydata <- mydata %>% mutate(cooksd = cooks_data$test)
 rm(mod, cooksd, cut_off, form, cooks_data)
+summary(mydata$cooksd)
 
 # Applying Cook's distance method to the dataset reduced the number of outliers
 # by 42k rows. Volume range decreased by 5 times. The same for the price range.
@@ -129,6 +141,7 @@ mydata$iqr[mydata$iqr == 0] <- "FALSE"
 mydata$iqr[mydata$iqr == 1] <- "TRUE"
 mydata$iqr <- as.logical(mydata$iqr)
 rm(out_sales, out_price, out_volume)
+summary(mydata$iqr)
 
 # Cleaning out the dataset with one-by-one outliers extraction results in
 # better identification of outliers than Cook's distance approach. However
@@ -150,7 +163,7 @@ par(mfrow = c(1,1))
 mah_data <- mydata[, c("sales", "price", "volume")]
 mah_data$sales <- log(mah_data$sales)
 
-alpha <- 0.05
+alpha <- 0.001
 cutoff <- (qchisq(p = 1 - alpha, df = ncol(mah_data)))
 
 mahal_r <- mahalanobis(mah_data, colMeans(mah_data), cov(mah_data))
@@ -160,8 +173,9 @@ mah_data <- mah_data %>% mutate(mhlbs = mahal_r,
 
 mydata$mhlbs <- mah_data$test
 rm(mah_data, mahal_r)
+summary(mydata$mhlbs)
 
-# MD method detected more outliers than Cook's distance, but 2.5 less outliers
+# MD method detected less outliers than Cook's distance and 2.5 less outliers
 # than interquantile range method. The reason as in case with CD is the impact
 # from large *misprint* values in sales and volume;
 

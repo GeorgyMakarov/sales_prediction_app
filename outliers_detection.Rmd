@@ -1,0 +1,401 @@
+---
+title: 'Predict sales in R: outliers detection 1'
+author: "Georgy Makarov"
+date: "07 08 2020"
+output: 
+        html_document:
+                toc: yes
+                toc_float: true
+                theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+## Prerequisite libraries
+
+```{r libs}
+library(dplyr)
+library(lubridate)
+library(splines)
+library(ggplot2)
+library(forecast)
+library(e1071)
+```
+
+## Introduction
+
+Sales forecasting for next financial year is the main step in budgeting after
+the strategy and business goals were determined. One way to forecast sales is
+to use historical sales data [1]. Historical data often contains registration
+errors and random events that are significantly different from the mass of 
+observations. Taking those into account results in forecast distortion and 
+wrong decisions. Such different data is usually denoted as outliers.
+
+Outliers detection and treatment is a crucial part of data processing. Erraneous
+data and genuine observations with low probability lead to data skewness and
+kurtosis. Modeling with outliers leads to poor model quality. There are several
+technical methods dealing with outliers - they should be used carefully, taking
+into consideration the nature of business processes.
+
+In this post we'll consider three ways to detect the outliers. Practical 
+implementation of approach described below could be sales prediction in FMCG 
+production companies. Database for this post was retreived from brewing company 
+*B* from Saint-Petersburg. The data represents 2019 weekly sales split by 
+products and shops.
+
+## Dataset description
+
+Dataset comes in a form of `.csv` file. Dataset has *6* variables:  
+- week = date of sale in date format;  
+- shop = unique key of a trade point;  
+- sku = unique key of a product;  
+- sales = amount of sales;  
+- price = price of sales;  
+- volume = physical sales volume;  
+
+Original dataset contains *2.4*M rows.
+
+```{r read_data, echo=FALSE}
+mydata <- read.csv(file = "data.csv", stringsAsFactors = FALSE)
+mydata$week <- ymd(mydata$Date_Id)
+mydata$sales <- mydata$valuesales * 1000
+mydata <- mydata %>% filter(volumesales > 0)
+mydata <- mydata %>% filter(sales > 0)
+mydata$price <- round(mydata$sales / mydata$volumesales, 4)
+mydata <- mydata %>% select(week, shop = Shop_Id, sku = SKU_Id, 
+                            sales, price, volume = volumesales)
+```
+
+```{r data_dim}
+dim(mydata)
+```
+
+## Outliers detection
+
+### Primary check
+
+Primary data evaluation allows looking for outliers with descriptive statistics
+and visual tools. We use it to identify general direction of outliers detection.
+Primary data evaluation includes comparison of median and mean values, 
+computation of range and computation of skewness. We use `skewness` function
+from `e1071` library to compute the skewness. Skewness computation method is
+type 1 method, as described in [2]:
+
+$$ g_1 = \frac{m_3}{(m_2)^\frac{3}{2}} $$
+
+All three features are positively skewed. There are outliers above 3rd quartile.
+
+*Sales* are skewed to the right. Mean and meadian are much closer to minimal value
+than to the maximal value. Skewness is greater than 1 - it indicates positive
+skew. Maximal value is *90* times higher than the median, which marks that
+there are outliers in the 3rd quantile.
+
+*Price* has positive skewness. Positive and large asymmetry coefficient shows
+significant shift of the bulk of observations to the left in the presence of
+a large right tail in the distribution. The maximum value is 1000 times the 
+median. The right tail drags the mean to the right.
+
+*Volume* distribution is similar to the sales. Characteristics of skewness and
+range are very close for both.
+
+```{r skewness}
+t1 <- tribble(~feature, ~coef_skewness, ~ mean,
+                "sales", skewness(mydata$sales), mean(mydata$sales),
+                "price", skewness(mydata$price), mean(mydata$price),
+                "volume", skewness(mydata$volume), mean(mydata$volume))
+
+t2 <- tribble(~median, ~max, ~min,
+              median(mydata$sales), max(mydata$sales), min(mydata$sales),
+              median(mydata$price), max(mydata$price), min(mydata$price),
+              median(mydata$volume), max(mydata$volume), min(mydata$volume))
+
+cbind(t1, t2)
+```
+
+We can check a hypothesis that there are outliers by estimating the dispersion
+of observations. Coefficient of variation shows how homogeneous is the
+population as a fraction of standard deviation and mean [3]:
+
+$$ c_v = \frac{\sigma}{\mu} $$
+
+Coefficients of variation of sales, price and volume confirm that populations of
+these variables are heterogeneous. Since all three are positive values, it is
+logical to suppose that high positive deviations from the means cause 
+heterogeneity in populations.
+
+```{r coef.var}
+tribble(~feature, ~coeff.variation,
+        "sales", sd(mydata$sales) / mean(mydata$sales) * 100,
+        "price", sd(mydata$price) / mean(mydata$price) * 100,
+        "volume", sd(mydata$volume) / mean(mydata$volume) * 100)
+```
+
+Visual inspection of histograms shows that the data is heavily right skewed.
+Sales histogram shows that there are sales with values up to 4e+05. There are so
+few observations with sales higher than 1e+04 that they do not show up on the
+histogram. The size of the sales axis marks that there are outliers. Histogram 
+of volume confirms the presence of outliers. Strangely, but price histogram also
+shows wide spread of prices with concentration around zero. It indicates that 
+outliers in sales and volume do not match by observations.
+
+```{r outs1, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$sales, col = "steelblue", main = "sales", xlab = "sales")
+hist(mydata$volume, col = "skyblue", main = "volume", xlab = "volume")
+hist(mydata$price, col = "lightgreen", main = "price", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+Now when we have found out that there is a good chance to find outliers in
+our features, it is time to detect exact points. We do this using three methods:
+Cook's distance, interquartile range (IQR), Mahalanobis distance.
+
+### Cook's distance
+
+Cook's distance (CD) measures the influence of an observation on regression
+model. It estimates the effect from deleting such observation from a model [4].
+Cook's distance is applicable for multivariate regression models.
+Computing Cook's distance involved linear regression model [5]:
+
+$$ y = X\beta + \epsilon $$
+where $\epsilon ~ N(0, \sigma^2I)$ is the **error term**, $\beta$ is the 
+coefficient matrix $[\beta_0 \beta_1 ... \beta_{p-1}]$, $p$ is the number of
+covariates for each observation, $X$ is a **design matrix** with constant.
+
+The solution to regression is to minimize the sum of squares. The least squeares
+estimator is given in [5]:
+
+$$ b = (X^T X)^{-1}X^T y $$
+
+Consequently, predicted values of the mean of **y**:
+
+$$ \widehat{y} = Xb = (X^T X)^{-1}X^Ty = Hy $$
+
+where $H$ is a projection matrix. Diagonal elements of projection matrix are 
+the leverage values of the observations [6]:
+
+$$ h_{ii} = x_i^T (X^T X)^{-1} x_i $$
+
+Residuals are denoted by $e_i$:
+
+$$ e = y - \widehat{y} = (I - H) \cdot y $$
+
+The extent to which the model changes when an $i$ observation is removed defines
+the influence of this observation. The observation with the largest change is
+the most influential. Thus **Cook's distance** of $i$ observation is then the 
+sum of all the changes in the regression model after $i$ has been removed:
+
+$$ D_i = \frac{\sum(\widehat{y}_j - \widehat{y}_{i(j)})^2}{ps^2} $$
+
+where $\widehat{y}_{i(j)}$ is the predicted value when excluding $i$ 
+observation and $s^2$ is the mean squared error of the model *MSE*:
+
+$$ s^2 = \sum \frac{e_i^2}{n - p} $$
+
+The last thing to decide is at what distance an observation becomes an outlier.
+There are different opinions on how to setup a cut-off value. Cook and Weisberg
+(1982) supposed that an observation with $D_i > 1$ is an outlier [7]. This
+universal approach does not take into account different size of the data.
+Besley, Kuh and Welsch (1980) proposed the size-adjusted cut-off for 
+distributions with large *n* [8]:
+
+$$ c_o = \frac{2}{\sqrt n} = \frac{4}{n} $$
+
+Even though this is a good rule of thumb for indentifying the outliers, a
+researcher has to make a final judgement based understanding of the data.
+
+Computing Cook's distance in `R` requires a linear model. In our case it is
+natural to make a model where sales depends on volume and price. Then we use
+`cooks.distance` function to calculate the distances and add a marker column
+to the dataset.
+
+```{r cooksd}
+form <- as.formula(log(sales) ~ price + volume)
+mod <- lm(form, data = mydata)
+
+cooksd <- cooks.distance(mod)
+cut_off <- 4 / nrow(mydata)
+
+cooks_data <- data.frame(cooksd, cut_off, test = cooksd >= cut_off)
+mydata <- mydata %>% mutate(cooksd = cooks_data$test)
+rm(mod, cooksd, cut_off, form, cooks_data)
+```
+
+The method identified *1.7* percent of outliers in the data.
+
+```{r cooksd_res}
+summary(mydata$cooksd)
+```
+
+Applying Cook's distance method to the dataset reduced the number of outliers
+by 42k rows. Volume range decreased by 5 times. The same for the price range.
+The same for the sales range. However there are many outliers left if we look
+at the histograms.
+
+```{r cooksd_hist, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$sales[mydata$cooksd == F], main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume[mydata$cooksd == F], main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price[mydata$cooksd == F], main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+Method of Cook's distance did not detect many outliers because of the linear
+model that we used. The model fitted to maximal sales value and missed the range
+of 20 - 60k sales. One way to solve this problem is to use interquantile 
+interval.
+
+### Interquantile interval
+
+Interquartile interval method (IQR) is a basic method to detect the outliers. 
+The method is only applicable for univariate approach, when you consider each
+variable indepent from others. IQR considers a data point an outlier if it is
+outside the range of $[q_1 - 1.5\cdot iqr, q_3 + 1.5 \cdot iqr]$, where
+$q_1$ is firest quartile, $q_3$ is third quartile and $iqr$ stands for inter
+quartile range [9]:
+
+$$ iqr = q_3 - q_1 $$
+
+IQR method has a drawback that it is only a rule of thumb that does not apply to
+every case. This way a researcher has to examine every potential outlier in the
+context of the dataset. Such examination could be a problem for large datasets.
+
+In our case, we need to compute the IQR for three varaibles. `R` has a function
+`boxplot.stats` that outputs the outliers detected using IQR method. Detection
+rate of IQR method is much better than Cook's distance as quartiles are not
+biased by high values as it was with the linear model.
+
+```{r iqr_det}
+out_sales <- boxplot.stats(mydata$sales)$out
+out_price <- boxplot.stats(mydata$price)$out
+out_volume <- boxplot.stats(mydata$volume)$out
+
+mydata$iqr <- 0
+mydata$iqr[mydata$sales %in% out_sales] <- 1
+mydata$iqr[mydata$price %in% out_price] <- 1
+mydata$iqr[mydata$volume %in% out_volume] <- 1
+
+mydata$iqr[mydata$iqr == 0] <- "FALSE"
+mydata$iqr[mydata$iqr == 1] <- "TRUE"
+mydata$iqr <- as.logical(mydata$iqr)
+
+rm(out_sales, out_price, out_volume)
+summary(mydata$iqr)
+```
+
+Manual check of detected outliers is easy in our case - visual inspection of 
+sales histogram shows that the upper limit reduced 6 times compared to CD.
+Cleaning out the dataset with one-by-one outliers extraction results in
+better identification of outliers than Cook's distance approach. However
+there are still to many outliers in the data. The algorithm worked well
+on sales, but the volume and the price required further exploration.
+
+```{r iqr_hist, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$sales[mydata$iqr == F], main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume[mydata$iqr == F], main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price[mydata$iqr == F], main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+### Mahalanobis distance
+
+Mahalanobis distance (MD) finds out how far away a data point is from a mass of
+distribution. MD is a multi-variate interpretation of measuring how many 
+standard deviations away an observation is from a dataset mean. The most common
+way to find MD is defined as [10]:
+
+$$ D_M = \sqrt {(x_i - \mu) \cdot S^{-1} \cdot (x_i - \mu)^T} $$
+
+where $x_i$ is a vector of values for observation $i$ and $\mu$ is a vector of 
+length $p$ equal to the number of columns in $x$ and $S$ is the covariance 
+matrix for $x$.
+
+An advantage of MD method is that a researcher can formally setup a cut-off
+value without using a judgement. This increases the possibility to reproduce
+a research. **Cut-off** value is based on a $\chi^2$ distribution with *p-value* 
+less than *0.001* [11]. An MD larger than the critical $\chi^2$ value for 
+**df = k** (the number of predictor variables in the model) at a critical alpha 
+value of *0.001* indicates the presence of one or more multivariate outliers.
+
+Generally, the critical value of $\chi^2$ can be obtained from a table. In
+case of using `R`, there is a way to find the value with `qchisq` function:
+
+```{r chisq}
+mah_data <- mydata[, c("sales", "price", "volume")]
+mah_data$sales <- log(mah_data$sales)
+
+alpha <- 0.001
+cutoff <- (qchisq(p = 1 - alpha, df = ncol(mah_data)))
+```
+
+MD detects less outliers than CD and *2.5* times liess outliers than the inter
+quartile range method. The reason, as in case with the Cook's distance, is the
+impact from large *misprint* error values in sales and volume.
+
+```{r mhlbs}
+mahal_r <- mahalanobis(mah_data, colMeans(mah_data), cov(mah_data))
+mah_data <- mah_data %>% mutate(mhlbs = mahal_r, 
+                                crit = cutoff, 
+                                test = mhlbs >= crit)
+
+mydata$mhlbs <- mah_data$test
+rm(mah_data, mahal_r)
+summary(mydata$mhlbs)
+```
+
+Here we tested three methods of outliers detection. These basic methods are 
+distance based and they are good for interpretation of detected data points.
+However none of them showed enough power to properly detect what is in the data.
+This is why knowing the data is always the first step in detecting process.
+
+## Conclusion
+
+Practical detection of data outliers for sales prediction projects has to be
+highly interpretable and scalable. This limits the choice of possible detection
+methods to three major alternatives. They are Cook's distance, interquartile 
+range and Mahalanobis distances. 
+
+Outliers detection is no simple task and requires good data knowledge. A
+researcher must carefully define what an expected outlier is. Another thing to
+do prior to technical detection is to compare how your data looks like if
+compared to what it should look like normally.
+
+In later posts we'll take a look at how to practically implement this approach
+to price prediction project in FMCG.
+
+## References
+
+ [1] https://thethrivingsmallbusiness.com/developing-and-managing-a-budget/  
+[2] D. N. Joanes and C. A. Gill (1998), Comparing measures of sample skewness 
+    and kurtosis. The Statistician, 47, 183–189.  
+[3] Everitt, Brian (1998). The Cambridge Dictionary of Statistics. Cambridge, 
+    UK New York: Cambridge University Press. ISBN 978-0521593465.  
+[4] Cook, R. Dennis (March 1979). "Influential Observations in Linear
+    Regression". Journal of the American Statistical Association. 
+    American Statistical Association. 74 (365): 169–174.  
+[5] Mendenhall, William; Sincich, Terry (1996). A Second Course in
+    Statistics: Regression Analysis (5th ed.). Upper Saddle River, NJ:
+    Prentice-Hall. p. 422.  
+[6] Hayashi, Fumio (2000). Econometrics. Princeton University Press. 
+    pp. 21–23.  
+[7] Cook, R. Dennis; Weisberg, Sanford (1982). Residuals and Influence in 
+    Regression. New York, NY: Chapman & Hall. ISBN 0-412-24280-X.  
+[8] Baltagi, H. Badi. Econometrics, 5e. New York, NY: Springer. ISBN
+    978-3-642-20058-8.  
+[9] Upton, Graham; Cook, Ian (1996). Understanding Statistics. Oxford University
+    Press. p. 55. ISBN 0-19-914391-9.  
+[10] De Maesschalck, R.; Jouan-Rimbaud, D.; Massart, D.L. "The Mahalanobis 
+     distance". Chemometrics and Intelligent Laboratory Systems. 50 (1): 1–18.  
+[11] Tabachnick, B.G., & Fidell, L.S. (2007). Using Multivariate Statistics 
+     (5th Ed.). Boston: Pearson. (p. 74). 
+
+
+
+
+
+
