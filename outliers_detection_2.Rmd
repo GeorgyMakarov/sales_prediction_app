@@ -1,0 +1,283 @@
+---
+title: 'Predict sales in R: outliers detection 2'
+author: "Georgy Makarov"
+date: "10 08 2020"
+output:
+    html_document:
+        toc: yes
+        toc_float: true
+        theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+## Introduction
+
+Forecasting sales is the basis of budgeting in production and retail companies.
+Usually budgeting starts from sales. Sales drive costs and supply chains. 
+Accurate sales prediction is a must when a company works in tight financial
+conditions.
+
+One way to forecast sales is to use historical data. However often data contains
+outliers, which distort the modeling and lead to wrong conclusions. Most common 
+causes of anomaly in data are errors and data novelties. A user has to find and
+treat anomaly data.
+
+There is a set of mathematical methods that identify data points different from
+a mass of observations. Most basic and interpretable are interquartile range,
+Cook's distance and Mahalanobis distance. 
+[Earlier](https://rpubs.com/georgy_makarov/647692)[1] we have seen that technical
+methods alone might not provide sensible result in real life project. Effective
+outliers detection still requires good data knowledge and manual check of data.
+
+In this post we'll consider a combination of visual data inspection and a
+sequence of technical methods. Practical implementation of this approach could
+be sales prediction in FMCG production companies. Database for this post was 
+retreived from brewing company B from Saint-Petersburg. The data represents 2019
+weekly sales split by products and shops.
+
+## Data description
+
+Dataset is in `.csv` format with `,` as a separator. It contains *6* variables.
+The variables are:  
+- week = date of sale in date format;  
+- shop = unique key of a trade point;  
+- sku = unique key of a product;  
+- sales = amount of sales;  
+- price = price of sales;  
+- volume = physical sales volume;  
+
+Original dataset contains 2.4M rows.
+Data is 
+[here](https://drive.google.com/drive/folders/16ivij6C4NrWbEpl6JcP7sbzsPfQwEDzv?usp=sharing)
+[2].
+
+## Prerequisite libraries
+
+```{r libs}
+library(dplyr)
+library(lubridate)
+library(splines)
+library(ggplot2)
+library(forecast)
+library(e1071)
+```
+
+## Outliers detection
+
+Dataset contains three variables of interest: sales, price and volume. In
+original dataset each of these variables is heterogeneous. The range of 
+variation is so large that it is impossible to make a conclusion of the shape of
+the distribution.
+
+```{r dataset, echo=FALSE}
+mydata <- read.csv(file = "sales_b_database.csv", stringsAsFactors = FALSE)
+mydata <- mydata %>% select(-X)
+mydata$week <- ymd(mydata$week)
+summary(mydata[, 4:6])
+```
+
+```{r hist1, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume, main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+We consider solving this problem in two steps. First, using visualization to
+identify outliers. Second, apply a sequence of interquartile range and Cook's
+distance or Mahalanobis distance methods. We will stop outliers detection when
+the data becomes homogeneous measured by variance coefficient.
+
+## Visual outliers identification
+
+We start from price outliers identification. The reason behind this choice is
+that price is a fraction of sales and volumes. Detecting outliers in price will
+also detect some anomaly in other variables.
+
+```{r hprice1, echo=FALSE}
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+```
+
+First visual inspection shows that there are so many observations with price 
+below 2000 and closer to zero that other prices cannot be determined at all. We
+can cut off all prices below 2000 easily.
+
+```{r iqr_price1}
+mydata <- mydata %>% filter(price < 2000)
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+```
+
+Now it is clear that we can also cut off values under 500.
+
+```{r iqr_price2}
+mydata <- mydata %>% filter(price < 500)
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+```
+
+Drilling deeper into price, there is a possibility to cut off values with price
+under 200.
+
+```{r iqr_price3}
+mydata <- mydata %>% filter(price < 200)
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+```
+
+Price has two clusters. First cluster is the most frequesnt set of values with
+price between *0* and *10*. Second cluster looks like normal distribution of
+prices from *40* to *130*. Natural question is why there are two price clusters.
+To answer this question we need more understanding of the first cluster.
+
+```{r hist_clust1, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$price[mydata$price > 0 & mydata$price < 10], 
+     main = "price in [0,10]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 0 & mydata$price < 2.5], 
+     main = "price in [0, 2.5]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 0 & mydata$price < 1.5], 
+     main = "price in [0, 1.5]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 0.4 & mydata$price < 1.5], 
+     main = "price in [0.4, 1.5]", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+Drilling down from price range of $[0, 10]$ to price range of $[0.4, 1.5]$ shows
+that price is very similar to normal distribution when it is in the range of
+$[0.4, 1.5]$ - now let us see what is in the second cluster.
+
+```{r hist_clust2, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$price[mydata$price > 30 & mydata$price < 200], 
+     main = "price in [30, 200]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 40 & mydata$price < 150], 
+     main = "price in [40, 150]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 40 & mydata$price < 130], 
+     main = "price in [40, 130]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 40 & mydata$price < 120], 
+     main = "price in [40, 120]", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+Both distributions are very similar. It looks like the prices just differ by
+two orders. Understanding the difference is based on the knowledge of the data.
+An example of the knowledge is given below. For any SKU number the price
+during the year might fluctuate withing a sensible limit. In our example *1894*
+price difference is *100* times. This is not normal. Error in sales or error
+in volume, underestimation and overestimation respectively, could cause such
+price difference.
+
+```{r sku1894}
+low_1894 <- mydata %>% 
+        filter(sku == 1894) %>%
+        filter(price >= 0.5 & price <= 0.6) %>% 
+        head(3)
+
+high_1894 <- mydata %>%
+        filter(sku == 1894) %>% 
+        filter(price >= 50 & price <= 60) %>% 
+        head(3)
+
+rbind(low_1894, high_1894)
+```
+
+Knowing that there is a set of erroneous prices we could do two things:  
+- delete observations with prices less than 40 and more than 120;  
+- impute erroneous values with adjusted values;  
+
+Second option imposes another problem - what value is correct: sales or volumes.
+If by some chance the volume is correct this will lead to overestimation of
+sales and vice versa. Since it is preferable to avoid the bias in sales or 
+volume, it is logical to stick to the first option.
+
+```{r price_kick}
+mydata <- mydata %>% filter(price > 40 & price < 120)
+```
+
+```{r after_price_kick, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume, main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+```{r rm_sku, echo=FALSE}
+rm(low_1894, high_1894)
+```
+
+## IQR and Cook's distance
+
+At the second stage we apply IQR and CD methods to get rid of remaining outlier
+data points.
+
+```{r iqrange}
+out_sales <- boxplot.stats(mydata$sales)$out
+out_price <- boxplot.stats(mydata$price)$out
+out_volume <- boxplot.stats(mydata$volume)$out
+
+mydata$iqr <- 0
+mydata$iqr[mydata$sales %in% out_sales] <- 1
+mydata$iqr[mydata$price %in% out_price] <- 1
+mydata$iqr[mydata$volume %in% out_volume] <- 1
+
+mydata$iqr[mydata$iqr == 0] <- "FALSE"
+mydata$iqr[mydata$iqr == 1] <- "TRUE"
+mydata$iqr <- as.logical(mydata$iqr)
+rm(out_sales, out_price, out_volume)
+summary(mydata[, 4:7])
+mydata <- mydata %>% filter(iqr == FALSE) %>% select(-iqr)
+```
+
+```{r cd}
+form <- as.formula(log(sales) ~ price + volume)
+mod <- lm(form, data = mydata)
+cooksd <- cooks.distance(mod)
+cut_off <- 4 / nrow(mydata)
+cooks_data <- data.frame(cooksd, cut_off, test = cooksd >= cut_off)
+mydata <- mydata %>% mutate(cooksd = cooks_data$test)
+rm(mod, cooksd, cut_off, form, cooks_data)
+summary(mydata$cooksd)
+mydata <- mydata %>% filter(cooksd == FALSE) %>% select(-cooksd)
+```
+
+```{r hist_cd, echo=FALSE}
+par(mfrow = c(2, 2))
+hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume, main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+```
+
+Variance coefficients show that the dataset is homogeneous and it is ready for
+further manipulation. The most homogeneous is the price, but sales and volume
+also are within the limit of *40* percent of variation.
+
+```{r var_co}
+tribble(~feature, ~coeff.variation,
+        "sales", sd(mydata$sales) / mean(mydata$sales) * 100,
+        "price", sd(mydata$price) / mean(mydata$price) * 100,
+        "volume", sd(mydata$volume) / mean(mydata$volume) * 100)
+```
+
+## Conclusion
+
+Outliers detection is a complex task. It requires a combination of manual and
+mathematical methods to clean the dataset. Manual detection depends on how well
+a researcher knows the data and possible causes of anomaly. Mathematical methods
+benefit from a consequtive application of at least two methods.
+
+Real life data projects in FMCG involve sourcing the data from different vendors.
+This might cause incosistency in the data, registration errors and so on. It is
+a good point to start such projects by check of data dimensions.
+
+## References
+
+[1] https://rpubs.com/georgy_makarov/647692  
+[2] https://drive.google.com/drive/folders/16ivij6C4NrWbEpl6JcP7sbzsPfQwEDzv?usp=sharing  
+
+

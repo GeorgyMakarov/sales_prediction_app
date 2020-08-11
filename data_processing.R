@@ -185,33 +185,12 @@ hist(mydata$volume[mydata$mhlbs == F], main = "", col = "skyblue", xlab = "volum
 hist(mydata$price[mydata$mhlbs == F], main = "", col = "lightgreen", xlab = "price")
 par(mfrow = c(1,1))
 
-# MD is preferable method as it allows to setup cutoff depending on the conf
-# level required by research. I try different approach to outliers detection;
-# 1. Identify outliers one-by-one with IQ method;
-# 2. Run MD on cleaned dataset;
+# Temp data processing
 
-mydata <- mydata %>% filter(iqr == FALSE)
-
-mah_data <- mydata[, c("sales", "price", "volume")]
-mah_data$sales <- log(mah_data$sales)
-
-mahal_r <- mahalanobis(mah_data, colMeans(mah_data), cov(mah_data))
-mah_data <- mah_data %>% mutate(mhlbs = mahal_r, 
-                                crit = cutoff, 
-                                test = mhlbs >= crit)
-
-mydata$mhlbs <- mah_data$test
-mydata <- mydata %>% filter(mhlbs == FALSE) %>% select(-c(cooksd, iqr, mhlbs))
-rm(mahal_r, mah_data)
-
-# There are two clusters if I look at price and volume columns. It is strange
-# that there so many items with price about 0 / liter. Most likely, there is
-# no chance the price is that low. It might be a mistake in input data. Need
-# to verify this hypothesis.
-
-# There are two clusters in the price column. First is a cluster with many 
-# observations lower than 10. Second is the price range from 40 to 120 - it 
-# resembles the normal distribution.
+mydata <- read.csv(file = "sales_b_database.csv", stringsAsFactors = FALSE)
+mydata <- mydata %>% select(-X)
+mydata$week <- ymd(mydata$week)
+summary(mydata[, 4:6])
 
 par(mfrow = c(2, 2))
 hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
@@ -219,68 +198,111 @@ hist(mydata$volume, main = "", col = "skyblue", xlab = "volume")
 hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
 par(mfrow = c(1,1))
 
-# Drill down to prices lower than 10;
-# Data is grouped in ranger from 0 to 2.5;
-# Find how the price is distributed between 2.5 and 6.0;
-# Find how the price is distributed between 0 and 2.5;
+# Start with outliers in prices - visual inspection
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+mydata <- mydata %>% filter(price < 200)
 
+# Research first cluster of prices
 
-hist(mydata$price[mydata$price < 10], 
-     main = "", col = "lightgreen", xlab = "price")
-
-hist(mydata$price[mydata$price >=2.5 & mydata$price < 6], 
-     main = "", col = "lightgreen", xlab = "price")
-
-# Price distribution in range from 0 to 1.5 looks very similar to the second
-# cluster - majority of the population is in the range of 0.7 - 0.9. It looks
-# like the data for either sales or volume contained an order mistake (100 
-# instead of 1000).
-# Knowing this I can remove the items with price less than 20;
-
+par(mfrow = c(2, 2))
+hist(mydata$price[mydata$price > 0 & mydata$price < 10], 
+     main = "price in [0,10]", col = "lightgreen", xlab = "price")
 hist(mydata$price[mydata$price > 0 & mydata$price < 2.5], 
-     main = "", col = "lightgreen", xlab = "price")
-
-# There are almost no items in the range of 20 to 30 - I can exclude all items
-# with price less than 30;
-
-hist(mydata$price[mydata$price >= 20 & mydata$price < 40], 
-     main = "", col = "lightgreen", xlab = "price")
-
-# Exclude items with price less than 30;
-
-mydata <- mydata %>% filter(price > 30)
-
-# The distribution now looks more reliable and usable;
-
-par(mfrow = c(2, 2))
-hist(mydata$sales[mydata$clust == F], main = "", col = "steelblue", xlab = "sales")
-hist(mydata$volume[mydata$clust == F], main = "", col = "skyblue", xlab = "volume")
-hist(mydata$price[mydata$clust == F], main = "", col = "lightgreen", xlab = "price")
+     main = "price in [0, 2.5]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 0 & mydata$price < 1.5], 
+     main = "price in [0, 1.5]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 0.4 & mydata$price < 1.5], 
+     main = "price in [0.4, 1.5]", col = "lightgreen", xlab = "price")
 par(mfrow = c(1,1))
 
-# Run MD on the data;
-
-mah_data <- mydata[, c("sales", "price", "volume")]
-mah_data$sales <- log(mah_data$sales)
-
-mahal_r <- mahalanobis(mah_data, colMeans(mah_data), cov(mah_data))
-mah_data <- mah_data %>% mutate(mhlbs = mahal_r, 
-                                crit = cutoff, 
-                                test = mhlbs >= crit)
-
-mydata$mhlbs <- mah_data$test
-rm(mah_data, mahal_r, alpha, cutoff)
-
-# Running MD allows to kick another 60k of items;
+# Research second cluster of prices
 
 par(mfrow = c(2, 2))
-hist(mydata$sales[mydata$mhlbs == F], main = "", col = "steelblue", xlab = "sales")
-hist(mydata$volume[mydata$mhlbs == F], main = "", col = "skyblue", xlab = "volume")
-hist(mydata$price[mydata$mhlbs == F], main = "", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 30 & mydata$price < 200], 
+     main = "price in [30, 200]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 40 & mydata$price < 150], 
+     main = "price in [40, 150]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 40 & mydata$price < 130], 
+     main = "price in [40, 130]", col = "lightgreen", xlab = "price")
+hist(mydata$price[mydata$price > 40 & mydata$price < 120], 
+     main = "price in [40, 120]", col = "lightgreen", xlab = "price")
 par(mfrow = c(1,1))
 
-mydata <- mydata %>% filter(mhlbs == FALSE) %>% select(-mhlbs)
-summary(mydata)
+# Filter items with price of 0.5 and see why this could happen
+
+low_1894 <- mydata %>% 
+        filter(sku == 1894) %>%
+        filter(price >= 0.5 & price <= 0.6) %>% 
+        head(3)
+
+high_1894 <- mydata %>%
+        filter(sku == 1894) %>% 
+        filter(price >= 50 & price <= 60) %>% 
+        head(3)
+
+rbind(low_1894, high_1894)
+
+rm(low_1894, high_1894)
+
+# Cut off values with prices < 40 & > 120
+
+mydata <- mydata %>% filter(price > 40 & price < 120)
+
+par(mfrow = c(2, 2))
+hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume, main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+
+# Run interquartile range on the dataset
+
+out_sales <- boxplot.stats(mydata$sales)$out
+out_price <- boxplot.stats(mydata$price)$out
+out_volume <- boxplot.stats(mydata$volume)$out
+
+mydata$iqr <- 0
+mydata$iqr[mydata$sales %in% out_sales] <- 1
+mydata$iqr[mydata$price %in% out_price] <- 1
+mydata$iqr[mydata$volume %in% out_volume] <- 1
+
+mydata$iqr[mydata$iqr == 0] <- "FALSE"
+mydata$iqr[mydata$iqr == 1] <- "TRUE"
+mydata$iqr <- as.logical(mydata$iqr)
+rm(out_sales, out_price, out_volume)
+summary(mydata[, 4:7])
+mydata <- mydata %>% filter(iqr == FALSE) %>% select(-iqr)
+
+# Run Cook's distance on the dataset
+
+form <- as.formula(log(sales) ~ price + volume)
+mod <- lm(form, data = mydata)
+cooksd <- cooks.distance(mod)
+cut_off <- 4 / nrow(mydata)
+cooks_data <- data.frame(cooksd, cut_off, test = cooksd >= cut_off)
+mydata <- mydata %>% mutate(cooksd = cooks_data$test)
+rm(mod, cooksd, cut_off, form, cooks_data)
+summary(mydata$cooksd)
+mydata <- mydata %>% filter(cooksd == FALSE) %>% select(-cooksd)
+
+# Plot results
+
+par(mfrow = c(2, 2))
+hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
+hist(mydata$volume, main = "", col = "skyblue", xlab = "volume")
+hist(mydata$price, main = "", col = "lightgreen", xlab = "price")
+par(mfrow = c(1,1))
+
+# Check if the data is homogeneous
+
+tribble(~feature, ~coeff.variation,
+        "sales", sd(mydata$sales) / mean(mydata$sales) * 100,
+        "price", sd(mydata$price) / mean(mydata$price) * 100,
+        "volume", sd(mydata$volume) / mean(mydata$volume) * 100)
+
+# Plot the sales
+
+hist(mydata$sales, main = "", col = "steelblue", xlab = "sales")
+
 
 # Choose top items and top shops ------------------------------------------
 
